@@ -1,0 +1,14 @@
+pandas
+pyarrow
+tqdm
+sparqlwrapper
+psycopg2-binary
+numpy
+fasttext
+scikit-learn
+imbalanced-learn
+tensorflow~=2.12.0
+keras~=2.12.0
+scikit-multilearn
+geopandas
+pyrosm
