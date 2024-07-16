@@ -51,8 +51,8 @@ nca contains information necessary for the schema alignment part of the linking 
 
 | option | use |
 | ------ | --- |
-| osm_tag_location | path to a csv file containing wikidata keys matched to osm keys (will be provided)|
-|osm_key_location | path to a csv file containing wikidata labels matched to osm tags (will be provided)|
+| osm_tag_location | path to a csv file containing wikidata keys matched to osm keys|
+|osm_key_location | path to a csv file containing wikidata labels matched to osm tags|
 |columns_location | textfile containing the names of all columns into which osm tag information has been moved during migration from osm file to database. **Leave this empty if all Tags are imported into a single tag column** |
 |relevance_threshold | minimum amount of entities for a class to be added to the alignment dataset |
 |prediction_threshold | minimum confidence for predicting a wikidata osm class match |

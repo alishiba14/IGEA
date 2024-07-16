@@ -1,7 +1,8 @@
 import pandas as pd
 import sys
 import configparser
-import psycopg2
+import asyncio
+import asyncpg
 
 DATA_DIR = sys.argv[1]
 CONFIG_PATH = sys.argv[2]
@@ -29,7 +30,7 @@ qid_index = pd.read_csv(QID_INDEX_FILE, delimiter='\t', header=None)
 
 print('preparing class filtered entities')
 
-# collect all unique qids
+# Collect all unique QIDs
 print('-gathering wikidata classes for entity linking')
 qid_dict = {}
 for index, row in qid_index.iterrows():
@@ -37,15 +38,17 @@ for index, row in qid_index.iterrows():
 
 classes['qid'] = classes.apply(lambda row: qid_dict[row[1]] if row[1] in qid_dict else '', axis=1)
 
-with open(CLASS_OUTPUT_PATH, 'w', encoding='utf-8', newline='') as file:
-    qids = list(classes['qid'].unique())
-    print(f'-found {len(qids)} unique wiki classes matched')
-    file.write('\n'.join(qids))
+async def gather_classes():
+    with open(CLASS_OUTPUT_PATH, 'w', encoding='utf-8', newline='') as file:
+        qids = list(classes['qid'].unique())
+        print(f'-found {len(qids)} unique wiki classes matched')
+        file.write('\n'.join(qids))
 
-# write sql script for view creation
+asyncio.run(gather_classes())
+
 print('-selecting osm classes for entity linking')
 
-# allow for custom columns such as in standard osm2pgsql import
+# Allow for custom columns such as in standard osm2pgsql import
 if COLUMN_FILE:
     with open(COLUMN_FILE, 'r', encoding='utf-8') as file:
         column_names = file.read().split(', ')
@@ -75,7 +78,7 @@ for s in tags:
         same_group = set()
     same_group.add(f"'{subtype}'")
     prev = typ
-# do finally
+
 is_column = False
 if prev in column_names:
     is_column = True
@@ -91,7 +94,6 @@ else:
     terms.append(f"tags -> '{prev}' in ({', '.join(same_group)})")
 
 delete_index_sql = f"DROP INDEX IF EXISTS {INDEX_NAME}"
-
 delete_sql = f"DROP MATERIALIZED VIEW IF EXISTS {VIEW_NAME}"
 
 sql = f"""
@@ -108,34 +110,33 @@ CREATE INDEX {INDEX_NAME}
 
 verification_sql = f"SELECT COUNT(*) FROM {VIEW_NAME}"
 
-with open(PW_FILENAME, 'r', encoding='utf-8') as file:
-    password = file.read().strip()
+async def execute_sql():
+    with open(PW_FILENAME, 'r', encoding='utf-8') as file:
+        password = file.read().strip()
 
-connection = psycopg2.connect(
-    dbname=PG_DB_NAME,
-    user=PG_USER,
-    password=password,
-    host=PG_HOST,
-    port=PG_PORT
-)
+    conn = await asyncpg.connect(
+        user=PG_USER,
+        password=password,
+        database=PG_DB_NAME,
+        host=PG_HOST,
+        port=PG_PORT
+    )
 
-print(f'-creating view {VIEW_NAME}')
-with open(VIEW_SQL_PATH, 'w', encoding='utf-8', newline='') as file:
-    file.write(sql)
+    print(f'-creating view {VIEW_NAME}')
+    with open(VIEW_SQL_PATH, 'w', encoding='utf-8', newline='') as file:
+        file.write(sql)
 
-cur = connection.cursor()
-cur.execute(delete_index_sql)
-cur.execute(delete_sql)
-cur.execute(sql)
-cur.execute(index_sql)
-cur.execute(verification_sql)
+    async with conn.transaction():
+        await conn.execute(delete_index_sql)
+        await conn.execute(delete_sql)
+        await conn.execute(sql)
+        await conn.execute(index_sql)
+        count = await conn.fetchval(verification_sql)
 
-for r in cur:
-    count = r[0]
-print(f'-view contains {count} entries')
+    print(f'-view contains {count} entries')
 
-connection.commit()
-cur.close()
-connection.close()
+    await conn.close()
+
+asyncio.run(execute_sql())
 
 print('-view created')

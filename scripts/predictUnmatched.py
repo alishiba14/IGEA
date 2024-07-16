@@ -4,7 +4,8 @@ import pickle
 import pandas as pd
 import sys
 import configparser
-import psycopg2
+import asyncio
+import asyncpg
 import tensorflow as tf
 import keras
 import numpy as np
@@ -18,7 +19,6 @@ ITERATION = int(sys.argv[3])
 
 config = configparser.ConfigParser()
 config.read(CONFIG_PATH)
-
 
 USE_ATTENTION = config.getboolean('entity linking', 'attention')
 if not USE_ATTENTION:
@@ -46,7 +46,6 @@ print('predicting entity matches')
 print('-loading dataset of possible new matchings')
 print(f'-from: {DATASET_LOCATION}')
 
-
 def recall_m(y_true, y_pred):
     true_positives = K.sum(K.round(K.clip(y_true * y_pred, 0, 1)))
     possible_positives = K.sum(K.round(K.clip(y_true, 0, 1)))
@@ -64,13 +63,12 @@ def f1_m(y_true, y_pred):
     recall = recall_m(y_true, y_pred)
     return 2*((precision*recall)/(precision+recall+K.epsilon()))
 
-
 if USE_ATTENTION:
     data = pd.read_csv(DATASET_LOCATION, delimiter='\t')
 
     print('-loading classifier')
     print(f'-from: {CLASSIFIER_LOCATION}')
-    model = keras.models.load_model(DATA_DIR + 'keras model', custom_objects={"CrossAttention": CrossAttention, "f1_m" : f1_m ,"precision_m" : precision_m, "recall_m" : recall_m})
+    model = keras.models.load_model(DATA_DIR + 'keras model', custom_objects={"CrossAttention": CrossAttention, "f1_m": f1_m, "precision_m": precision_m, "recall_m": recall_m})
     nWords = model.layers[0].get_output_at(0).get_shape()[1]
     print('-loading osm tokenizer')
     print(f'-from: {OSM_TOKENIZER_LOCATION}')
@@ -109,7 +107,6 @@ else:
     probabilities = predicted_values[:, 1]
     prediction = (probabilities >= PREDICTION_THRESHOLD)
 
-
 print(f'-Number of predicted matches: {int(prediction.sum())} / {len(prediction)}')
 print(f'-matched percentage: {(int(prediction.sum()) / len(prediction)) * 100: .2f}%')
 
@@ -131,33 +128,34 @@ prediction_pairs = prediction_pairs[prediction]
 with open(PW_FILENAME, 'r') as file:
     password = file.read().strip()
 
-connection = psycopg2.connect(
-    dbname=PG_DB_NAME,
-    user=PG_USER,
-    password=password,
-    host=PG_HOST,
-    port=PG_PORT
-)
-
-def generate_list(df: pd.DataFrame) -> tuple:
+async def generate_list(df: pd.DataFrame) -> tuple:
     entries = []
     for index, row in df.iterrows():
         entries.extend([row[0], row[1], str(row[2]), ITERATION])
     return tuple(entries)
 
-cur = connection.cursor()
+async def update_predictions():
+    conn = await asyncpg.connect(
+        user=PG_USER,
+        password=password,
+        database=PG_DB_NAME,
+        host=PG_HOST,
+        port=PG_PORT
+    )
+
+    sql = f"INSERT INTO {TABLE_NAME} (wkid, osm_id, confidence, iteration) VALUES "
+    i = 0
+    batchsize = 2
+
+    async with conn.transaction():
+        while i < len(prediction_pairs) - 1:
+            offset = min(batchsize, len(prediction_pairs) - 1 - i)
+            inserts = ','.join(["($1, $2, $3, $4)"] * offset)
+            await conn.execute(sql + inserts, *generate_list(prediction_pairs[i:i + offset]))
+            i += offset
+
+    await conn.close()
 
 print(f'-writing matches to {TABLE_NAME}')
-
-sql = f"INSERT INTO {TABLE_NAME} (wkid, osm_id, confidence, iteration) VALUES "
-i = 0
-batchsize = 2
-while i < len(prediction_pairs) - 1:
-    offset = min(batchsize, len(prediction_pairs) - 1 - i)
-    inserts = ','.join(["('%s', %s, %s, %s)"] * offset)
-    cur.execute(sql + inserts % generate_list(prediction_pairs[i:i + offset]))
-    i += offset
-connection.commit()
+asyncio.run(update_predictions())
 print(f'-writing complete')
-cur.close()
-connection.close()

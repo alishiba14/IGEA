@@ -1,7 +1,8 @@
 import pandas as pd
 import sys
 import configparser
-import psycopg2
+import asyncio
+import asyncpg
 
 DATA_DIR = sys.argv[1]
 CONFIG_PATH = sys.argv[2]
@@ -27,20 +28,21 @@ classes = pd.read_csv(CLASS_FILE, delimiter='\t')
 
 print('preparing class filtered entities')
 
-# collect all unique qids
+# Collect all unique QIDs
 print('-gathering dbpedia classes for entity linking')
-with open(CLASS_OUTPUT_PATH, 'w', encoding='utf-8', newline='') as file:
+async def gather_classes():
     unique_classes = []
     for val in set(classes.iloc[:, 1]):
         if 'person' not in str(val).lower():
             unique_classes.append(val)
     print(f'-found {len(unique_classes)} unique wiki classes matched')
-    file.write('\n'.join(unique_classes))
+    with open(CLASS_OUTPUT_PATH, 'w', encoding='utf-8', newline='') as file:
+        file.write('\n'.join(unique_classes))
 
-# write sql script for view creation
+asyncio.run(gather_classes())
+
 print('-selecting osm classes for entity linking')
 
-# allow for custom columns such as in standard osm2pgsql import
 if COLUMN_FILE:
     with open(COLUMN_FILE, 'r', encoding='utf-8') as file:
         column_names = file.read().split(', ')
@@ -70,7 +72,7 @@ for s in tags:
         same_group = set()
     same_group.add(f"'{subtype}'")
     prev = typ
-# do finally
+
 is_column = False
 if prev in column_names:
     is_column = True
@@ -103,34 +105,33 @@ CREATE INDEX {INDEX_NAME}
 
 verification_sql = f"SELECT COUNT(*) FROM {VIEW_NAME}"
 
-with open(PW_FILENAME, 'r', encoding='utf-8') as file:
-    password = file.read().strip()
+async def execute_sql():
+    with open(PW_FILENAME, 'r', encoding='utf-8') as file:
+        password = file.read().strip()
 
-connection = psycopg2.connect(
-    dbname=PG_DB_NAME,
-    user=PG_USER,
-    password=password,
-    host=PG_HOST,
-    port=PG_PORT
-)
+    conn = await asyncpg.connect(
+        user=PG_USER,
+        password=password,
+        database=PG_DB_NAME,
+        host=PG_HOST,
+        port=PG_PORT
+    )
 
-print(f'-creating view {VIEW_NAME}')
-with open(VIEW_SQL_PATH, 'w', encoding='utf-8', newline='') as file:
-    file.write(sql)
+    print(f'-creating view {VIEW_NAME}')
+    with open(VIEW_SQL_PATH, 'w', encoding='utf-8', newline='') as file:
+        file.write(sql)
 
-cur = connection.cursor()
-cur.execute(delete_index_sql)
-cur.execute(delete_sql)
-cur.execute(sql)
-cur.execute(index_sql)
-cur.execute(verification_sql)
+    async with conn.transaction():
+        await conn.execute(delete_index_sql)
+        await conn.execute(delete_sql)
+        await conn.execute(sql)
+        await conn.execute(index_sql)
+        count = await conn.fetchval(verification_sql)
+        
+    print(f'-view contains {count} entries')
 
-for r in cur:
-    count = r[0]
-print(f'-view contains {count} entries')
+    await conn.close()
 
-connection.commit()
-cur.close()
-connection.close()
+asyncio.run(execute_sql())
 
 print('-view created')

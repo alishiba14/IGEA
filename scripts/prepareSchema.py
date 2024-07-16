@@ -1,6 +1,7 @@
 import sys
 import configparser
-import psycopg2
+import asyncio
+import asyncpg
 
 CONFIG_PATH = sys.argv[1]
 
@@ -22,14 +23,6 @@ print('preparing schema')
 
 with open(PW_FILENAME, 'r') as file:
     password = file.read().strip()
-
-connection = psycopg2.connect(
-    dbname=PG_DB_NAME,
-    user=PG_USER,
-    password=password,
-    host=PG_HOST,
-    port=PG_PORT
-)
 
 delete_index_sql = f"DROP INDEX IF EXISTS {INDEX_NAME}"
 delete_view = f"DROP MATERIALIZED VIEW IF EXISTS {VIEW_NAME}"
@@ -61,17 +54,27 @@ else:
         WHERE tags -> 'wikipedia' is not null
     """
 
+async def execute_sql():
+    conn = await asyncpg.connect(
+        user=PG_USER,
+        password=password,
+        database=PG_DB_NAME,
+        host=PG_HOST,
+        port=PG_PORT
+    )
 
-cur = connection.cursor()
-print('-deleting old view')
-cur.execute(delete_index_sql)
-cur.execute(delete_view)
-print('-deleting old prediction table')
-cur.execute(delete_table)
-print(f'-creating table {TABLE_NAME}')
-cur.execute(sql)
-print(f'-filling {TABLE_NAME} with ground truth')
-cur.execute(init_sql)
-connection.commit()
-cur.close()
-connection.close()
+    async with conn.transaction():
+        cur = conn.cursor()
+        print('-deleting old view')
+        await conn.execute(delete_index_sql)
+        await conn.execute(delete_view)
+        print('-deleting old prediction table')
+        await conn.execute(delete_table)
+        print(f'-creating table {TABLE_NAME}')
+        await conn.execute(sql)
+        print(f'-filling {TABLE_NAME} with ground truth')
+        await conn.execute(init_sql)
+
+    await conn.close()
+
+asyncio.run(execute_sql())
